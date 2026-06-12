@@ -13,6 +13,14 @@
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="DalalRider — Ride any Indian stock chart">
 <meta name="twitter:description" content="Motocross meets Dalal Street. Ride real NIFTY 50 charts.">
+<!-- Google Analytics (GA4) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-XP0ZJ4X43R"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-XP0ZJ4X43R');
+</script>
 <style>
   :root{
     --bg:#0d0d11; --card:#15151b; --line:#23232c;
@@ -397,6 +405,7 @@ function renderCard(s){
 
 // ---------- DETAIL page ----------
 let detailSym=null, period="1Y", smooth=false;
+function track(name,params){if(typeof gtag==="function")gtag("event",name,params||{});}
 
 function openDetail(s){
   detailSym=s;
@@ -739,6 +748,7 @@ function crash(){
   pts=Math.max(0,pts-20);
   bike.lastAir=0;
   toast("REKT −20");
+  track("crash",{stock:terrain.stock.sym});
 }
 function fmtT(s){const m=Math.floor(s/60),r=s-m*60;return m+":"+(r<10?"0":"")+r.toFixed(1);}
 function finish(){
@@ -756,6 +766,7 @@ function finish(){
   pe.textContent=(p<0?"-₹":"₹")+Math.abs(p).toLocaleString("en-IN");
   pe.className=p>=0?"up":"down";
   $("overlay").style.display="flex";
+  track("run_finish",{stock:s.sym,period:period,time:Math.round(runT*10)/10,points:pts,flips:flips,pnl:p});
 }
 
 // ---------- drawing ----------
@@ -939,6 +950,7 @@ function startRun(){
   $("touch").style.display=isTouch?"flex":"none";
   if(isTouch)$("legend").classList.add("hide");
   state="play";
+  track("run_start",{stock:terrain.stock.sym,period:period,smooth:smooth,live:!!terrain.live});
 }
 function exitToDetail(){
   state="menu";
