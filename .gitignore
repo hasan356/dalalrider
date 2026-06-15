@@ -1,0 +1,13 @@
+# local reference recordings / scratch media — not part of the site
+*.mov
+*.mp4
+frames/
+Screenshot*.png
+
+# OS junk
+.DS_Store
+
+# stonkrider reference source — kept locally for inspiration, not shipped
+/data/
+/screens/
+/ui/

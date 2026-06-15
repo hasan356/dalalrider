@@ -137,6 +137,11 @@
   .tbtn{width:66px;height:66px;border-radius:50%;border:1px solid #2a2a35;background:rgba(18,18,24,.7);
     color:var(--ink);font-size:13px;display:flex;align-items:center;justify-content:center;user-select:none}
   .tbtn:active{background:var(--nitro);color:#160c06}
+  #h-streak{color:var(--nitro);font-size:16px;font-weight:700;letter-spacing:1px;
+    text-shadow:0 0 12px rgba(255,122,60,.5)}
+  #mute{position:fixed;top:128px;right:16px;z-index:10;background:rgba(21,21,27,.85);
+    border:1px solid var(--line);border-radius:8px;color:var(--ink);font-size:14px;
+    padding:6px 10px;cursor:pointer;font-family:inherit;line-height:1}
 </style>
 </head>
 <body>
@@ -189,7 +194,7 @@
 <!-- ============ GAME HUD ============ -->
 <div id="hud-tl" class="hide">
   <div class="row1" id="h-sym">NIFTY · 1Y</div>
-  <div class="row2"><span id="h-pts">0</span><small>pts</small></div>
+  <div class="row2"><span id="h-pts">0</span><small>pts</small> <span id="h-streak"></span></div>
   <div class="row3">Air: <span id="h-air">0.0s</span></div>
   <div class="row4" id="h-price">0</div>
 </div>
@@ -199,6 +204,7 @@
 </div>
 <canvas id="minimap" class="hide" width="210" height="64"></canvas>
 <button id="g-home" class="hide">← charts</button>
+<button id="mute" class="hide">🔊</button>
 <div id="legend" class="hide">
   <div class="l"><span><kbd>↑</kbd> gas</span><span><kbd>Shift / N</kbd> nitro</span></div>
   <div class="l"><span><kbd>←</kbd> wheelie</span><span><kbd>→</kbd> nose dive</span></div>
@@ -214,6 +220,7 @@
     <div class="stat"><span>time</span><b id="o-time">0:00.0</b></div>
     <div class="stat"><span>points</span><b id="o-pts">0</b></div>
     <div class="stat"><span>backflips</span><b id="o-flips">0</b></div>
+    <div class="stat"><span>best combo</span><b id="o-streak">×1</b></div>
     <div class="stat"><span>closing price</span><b id="o-price">0</b></div>
     <div class="stat"><span>P&amp;L on ₹1L</span><b id="o-pnl">₹0</b></div>
     <div class="btnrow">
@@ -247,6 +254,56 @@ function rng(seed){
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
+
+// ---------- sound (Web Audio, fully synthesized — no asset files) ----------
+const SND=(function(){
+  let ac=null,master=null,eng=null,engF=null,engG=null,noiseBuf=null;
+  let muted=false;try{muted=localStorage.getItem("dr_muted")==="1"}catch(e){}
+  function ensure(){
+    if(ac)return;
+    try{ac=new(window.AudioContext||window.webkitAudioContext)()}catch(e){return}
+    master=ac.createGain();master.gain.value=muted?0:0.5;master.connect(ac.destination);
+  }
+  function tone(freq,dur,type,vol,slide,delay){
+    if(!ac)return;const t=ac.currentTime+(delay||0);
+    const o=ac.createOscillator(),g=ac.createGain();
+    o.type=type||"square";o.frequency.setValueAtTime(freq,t);
+    if(slide)o.frequency.exponentialRampToValueAtTime(Math.max(20,slide),t+dur);
+    g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    o.connect(g);g.connect(master);o.start(t);o.stop(t+dur+0.03);
+  }
+  function noise(dur,vol,cutoff,hp){
+    if(!ac)return;const t=ac.currentTime;
+    if(!noiseBuf){noiseBuf=ac.createBuffer(1,ac.sampleRate,ac.sampleRate);
+      const d=noiseBuf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;}
+    const src=ac.createBufferSource();src.buffer=noiseBuf;
+    const f=ac.createBiquadFilter();f.type=hp?"highpass":"lowpass";f.frequency.value=cutoff||1200;
+    const g=ac.createGain();g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+    src.connect(f);f.connect(g);g.connect(master);src.start(t);src.stop(t+dur+0.02);
+  }
+  return{
+    resume(){ensure();if(ac&&ac.state==="suspended")ac.resume();},
+    isMuted(){return muted;},
+    setMuted(m){muted=m;try{localStorage.setItem("dr_muted",m?"1":"0")}catch(e){}if(master)master.gain.value=m?0:0.5;return muted;},
+    engineOn(){ensure();if(!ac||eng)return;
+      eng=ac.createOscillator();engF=ac.createBiquadFilter();engG=ac.createGain();
+      eng.type="sawtooth";eng.frequency.value=58;engF.type="lowpass";engF.frequency.value=400;engG.gain.value=0;
+      eng.connect(engF);engF.connect(engG);engG.connect(master);eng.start();},
+    engineOff(){if(eng){try{eng.stop()}catch(e){}try{eng.disconnect();engF.disconnect();engG.disconnect()}catch(e){}eng=null;}},
+    engine(speed,gas){if(!eng||!ac)return;const s=Math.min(1,Math.abs(speed)/1400),tc=ac.currentTime;
+      eng.frequency.setTargetAtTime(52+s*150,tc,0.06);
+      engF.frequency.setTargetAtTime(280+s*1700+(gas?500:0),tc,0.06);
+      engG.gain.setTargetAtTime(0.015+s*0.05+(gas?0.02:0),tc,0.08);},
+    jump(){ensure();tone(420,0.18,"square",0.10,720);},
+    land(){ensure();noise(0.12,0.08,500,false);},
+    trick(n){ensure();const sc=[523,659,784,1047,1318];for(let i=0;i<Math.min(5,1+(n||1));i++)tone(sc[i],0.16,"square",0.10,null,i*0.05);},
+    combo(){ensure();[523,659,784,1047,1318].forEach((f,i)=>tone(f,0.22,i%2?"sine":"square",0.12,null,i*0.045));},
+    crash(){ensure();tone(300,0.18,"sawtooth",0.16,40);noise(0.2,0.12,1800,false);},
+    nitro(){ensure();tone(90,0.4,"sawtooth",0.10,260);noise(0.4,0.05,3000,true);},
+    finish(){ensure();[392,523,659,784,784].forEach((f,i)=>tone(f,i===4?0.5:0.16,"sawtooth",0.13,null,i*0.14));}
+  };
+})();
 
 // ---------- universe: NIFTY 50 top weights ----------
 const SYMBOLS=[
@@ -444,15 +501,28 @@ function currentSeries(){
   };
 }
 
+// Typical (median) daily move maps to this slope in radians (~25°). The terrain
+// height scale is derived from it, so calm and volatile stocks ride the same.
+// Higher = taller peaks / deeper valleys → you feel the long climbs and plunges.
+const SLOPE_TARGET=0.45;
+// 0 = fully rounded (Catmull-Rom), 1 = sharp straight-line corners at each point
+const TERRAIN_SHARP=0.85;        // visual sharpness of the drawn terrain line
+const TERRAIN_SHARP_PHYS=0.72;   // physics sharpness — kept close to visual so the ride matches the drawn dips
+// median absolute day-to-day move in log space — the basis for the height scale
+function medianMove(logs){
+  const m=[];
+  for(let i=1;i<logs.length;i++)m.push(Math.abs(logs[i]-logs[i-1]));
+  m.sort((a,b)=>a-b);
+  return m.length?(m[m.length>>1]||1e-4):1e-4;
+}
 // terrain geometry preview stats (must match game mapping)
 function terrainStats(prices){
-  const segPx=Math.max(45,Math.min(130,Math.round(16000/prices.length)));
+  const segPx=Math.max(95,Math.min(240,Math.round(26000/prices.length)));
   const logs=prices.map(p=>Math.log(p));
-  const lo=Math.min(...logs),hi=Math.max(...logs)||lo+1;
-  const ampl=Math.min(innerHeight,900)*0.62;
+  const scale=segPx*Math.tan(SLOPE_TARGET)/Math.max(medianMove(logs),1e-5);
   let maxS=0;
-  for(let i=1;i<prices.length;i++){
-    const dy=((logs[i]-logs[i-1])/(hi-lo||1))*ampl;
+  for(let i=1;i<logs.length;i++){
+    const dy=(logs[i]-logs[i-1])*scale;
     maxS=Math.max(maxS,Math.abs(Math.atan2(dy,segPx))*180/Math.PI);
   }
   return{segPx,maxSlope:Math.round(maxS)};
@@ -515,22 +585,31 @@ function drawPreview(ser,s){
     g.fillText(lab,w-padR+12,y+4);
   }
 
-  // area fill
+  // area fill — tinted by the stock's overall direction (red if it ended lower)
+  const upAll=P[P.length-1]>=P[0];
+  const fillRGB=upAll?"53,224,161":"241,83,94";
   g.beginPath();
   P.forEach((v,i)=>{i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v));});
   g.lineTo(X(P.length-1),h-padB+10);g.lineTo(X(0),h-padB+10);g.closePath();
   const grad=g.createLinearGradient(0,padT,0,h);
-  grad.addColorStop(0,"rgba(53,224,161,.10)");grad.addColorStop(1,"rgba(53,224,161,0)");
+  grad.addColorStop(0,"rgba("+fillRGB+",.10)");grad.addColorStop(1,"rgba("+fillRGB+",0)");
   g.fillStyle=grad;g.fill();
 
-  // glowing line
-  g.beginPath();
-  P.forEach((v,i)=>{i?g.lineTo(X(i),Y(v)):g.moveTo(X(i),Y(v));});
-  g.strokeStyle="#35e0a1";g.shadowColor="#35e0a1";g.shadowBlur=10;
-  g.lineWidth=2;g.lineJoin="round";g.stroke();g.shadowBlur=0;
+  // glowing line — coloured per segment like the terrain you ride: down moves = red
+  g.lineWidth=2;g.lineJoin="round";g.lineCap="round";
+  for(const up of[true,false]){
+    g.strokeStyle=up?"#35e0a1":"#f1535e";g.shadowColor=g.strokeStyle;g.shadowBlur=10;
+    g.beginPath();
+    for(let i=0;i<P.length-1;i++){
+      if((P[i+1]>=P[i])!==up)continue;
+      g.moveTo(X(i),Y(P[i]));g.lineTo(X(i+1),Y(P[i+1]));
+    }
+    g.stroke();
+  }
+  g.shadowBlur=0;
 
   // START marker
-  g.fillStyle="#35e0a1";
+  g.fillStyle=upAll?"#35e0a1":"#f1535e";
   g.beginPath();g.arc(X(0),Y(P[0]),4.5,0,7);g.fill();
   g.fillStyle="#e9edf2";g.font="700 12px ui-monospace,Menlo,monospace";
   g.fillText("START",X(0)+8,Y(P[0])-12);
@@ -562,7 +641,7 @@ const LEAD=6,TAIL=5;
 let terrain=null;
 
 function buildTerrain(s,ser){
-  const segPx=Math.max(45,Math.min(130,Math.round(16000/ser.prices.length)));
+  const segPx=Math.max(95,Math.min(240,Math.round(26000/ser.prices.length)));
   terrain={stock:s,prices:ser.prices,dates:ser.dates,seg:segPx,
     np:ser.prices.length,xs:[],ys:[],
     n:LEAD+ser.prices.length+TAIL,
@@ -571,35 +650,49 @@ function buildTerrain(s,ser){
   let mn=0,mx=0;
   ser.prices.forEach((p,i)=>{if(p<ser.prices[mn])mn=i;if(p>ser.prices[mx])mx=i;});
   terrain.minIdx=mn;terrain.maxIdx=mx;
+  // flag the biggest single-day moves (≥5%) as market-event markers on the terrain
+  const ev=[];
+  for(let i=1;i<ser.prices.length;i++){
+    const ch=ser.prices[i]/ser.prices[i-1]-1;
+    if(Math.abs(ch)>=0.05)ev.push({idx:i,pct:ch});
+  }
+  ev.sort((a,b)=>Math.abs(b.pct)-Math.abs(a.pct));
+  terrain.events=ev.slice(0,8);
   rebuildHeights();
 }
 function rebuildHeights(){
   const t=terrain,SEG=t.seg;
   const logs=t.prices.map(p=>Math.log(p));
-  let lo=Math.min(...logs),hi=Math.max(...logs);
-  if(hi-lo<1e-6)hi=lo+1;
-  const ampl=H*0.62,base=H*0.82;
-  const raw=logs.map(l=>base-((l-lo)/(hi-lo))*ampl);
-  // light 1-2-1 smoothing: keeps the chart's shape, removes single-day snags
+  // height scale set so the median daily move ≈ SLOPE_TARGET — consistent ride
+  // for any volatility. Camera follows vertically, so total range needn't fit.
+  const scale=SEG*Math.tan(SLOPE_TARGET)/Math.max(medianMove(logs),1e-5);
+  const mid=(Math.min(...logs)+Math.max(...logs))/2;
+  const base=H*0.5;
+  const raw=logs.map(l=>base-(l-mid)*scale);
+  // barely-there smoothing: keep dips/peaks at near-full depth, only shave the worst snag
   const ys=raw.map((v,i)=>{
     const a=raw[Math.max(0,i-1)],b=raw[Math.min(raw.length-1,i+1)];
-    return (a+2*v+b)/4;
+    return (a+22*v+b)/24;
   });
   t.xs.length=0;t.ys.length=0;
   for(let i=0;i<LEAD;i++){t.xs.push(i*SEG);t.ys.push(ys[0]);}
   for(let i=0;i<t.np;i++){t.xs.push((LEAD+i)*SEG);t.ys.push(ys[i]);}
   for(let i=0;i<TAIL;i++){t.xs.push((LEAD+t.np+i)*SEG);t.ys.push(ys[t.np-1]);}
 }
-function groundY(x){
+function groundY(x,sharp){
   const t=terrain,SEG=t.seg,n=t.n;
   if(x<=0)return t.ys[0];
   const f=x/SEG,i=Math.floor(f);
   if(i>=n-1)return t.ys[n-1];
   const u=f-i;
-  // Catmull-Rom spline: continuous slope across points = smooth ride
   const p0=t.ys[Math.max(0,i-1)],p1=t.ys[i],
         p2=t.ys[Math.min(n-1,i+1)],p3=t.ys[Math.min(n-1,i+2)];
-  return 0.5*((2*p1)+(-p0+p2)*u+(2*p0-5*p1+4*p2-p3)*u*u+(-p0+3*p1-3*p2+p3)*u*u*u);
+  // Catmull-Rom = smooth/rounded; linear = sharp corners at each point.
+  // Visuals use TERRAIN_SHARP (pointy); physics defaults to the rounder TERRAIN_SHARP_PHYS.
+  const cr=0.5*((2*p1)+(-p0+p2)*u+(2*p0-5*p1+4*p2-p3)*u*u+(-p0+3*p1-3*p2+p3)*u*u*u);
+  const lin=p1+(p2-p1)*u;
+  const s=sharp===undefined?TERRAIN_SHARP_PHYS:sharp;
+  return cr+(lin-cr)*s;
 }
 function groundSlope(x){const d=12;return Math.atan2(groundY(x+d)-groundY(x-d),2*d);}
 function priceAt(x){
@@ -608,21 +701,42 @@ function priceAt(x){
   return t.prices[Math.max(0,Math.min(t.np-1,i))];
 }
 
-// ---------- bike ----------
-const G=2300,WR=14,WB=58;
+// ---------- vehicles ----------
+const G=2750;   // gravity — higher = heavier, hugs the ground, less floaty air
+const VEHICLES={
+ bike:{key:"bike",label:"Bike",emoji:"🏍️",wr:14,wb:58,accel:900,nAccel:850,brake:1100,
+   maxV:1350,maxVN:1750,jump:640,tqG:8.5,tqA:13.5,headX:-10,headY:-52,rekt:"REKT −20"},
+ auto:{key:"auto",label:"Auto",emoji:"🛺",wr:11,wb:66,accel:760,nAccel:700,brake:1000,
+   maxV:1080,maxVN:1420,jump:470,tqG:6.5,tqA:9.5,headX:0,headY:-46,rekt:"AUTO PALTI −20"},
+ cycle:{key:"cycle",label:"Cycle",emoji:"🚲",wr:15,wb:52,accel:540,nAccel:620,brake:900,
+   maxV:920,maxVN:1200,jump:730,tqG:9.5,tqA:16,headX:-8,headY:-54,rekt:"CHAIN UTRI −20"},
+};
+let veh=VEHICLES.bike;
+function setVehicle(k){
+  veh=VEHICLES[k]||VEHICLES.bike;
+  try{localStorage.setItem("dr_vehicle",veh.key)}catch(e){}
+  document.querySelectorAll(".vbtn").forEach(b=>b.classList.toggle("on",b.dataset.v===veh.key));
+}
+document.querySelectorAll(".vbtn").forEach(b=>b.onclick=()=>setVehicle(b.dataset.v));
+try{setVehicle(localStorage.getItem("dr_vehicle")||"bike")}catch(e){setVehicle("bike")}
+
+// ---------- bike state ----------
 const bike={x:0,y:0,vx:0,vy:0,a:0,va:0,onGround:false,spin:0,
   airT:0,airStartA:0,lastAir:0,crashT:0,finished:false,jumpCd:0};
 let pts=0,flips=0,nitro=1,runT=0,startPrice=0,qty=0,wheelieT=0;
+let streak=1,maxStreak=1,bestCombo="",nosWas=false;
 
 function resetBike(toX){
   bike.x=toX!==undefined?toX:3.5*terrain.seg;
-  bike.y=groundY(bike.x)-WR-2;
+  bike.y=groundY(bike.x)-veh.wr-2;
   bike.vx=0;bike.vy=0;bike.a=groundSlope(bike.x);bike.va=0;
   bike.airT=0;bike.crashT=0;bike.finished=false;bike.jumpCd=0;
+  bike.nosInAir=false;bike.trickShown=false;
 }
 function fullReset(){
   resetBike();
   pts=0;flips=0;nitro=1;runT=0;wheelieT=0;bike.lastAir=0;
+  streak=1;maxStreak=1;bestCombo="";nosWas=false;
   startPrice=priceAt(bike.x);
   qty=Math.max(1,Math.round(100000/startPrice));
 }
@@ -655,8 +769,15 @@ bindTouch("t-right","ArrowRight");bindTouch("t-jump","Space");bindTouch("t-nitro
 const isTouch=matchMedia("(pointer:coarse)").matches;
 
 // ---------- state ----------
-let state="menu",camX=0,camY=0,last=0,toastT=0;
+let state="menu",camX=0,camY=0,camZoom=1,last=0,toastT=0;
 function toast(m){$("toast").textContent=m;$("toast").style.opacity=1;toastT=1.3;}
+// grant points scaled by the current combo streak, then grow the streak (caps at ×5)
+function award(base,label,combo){
+  const g=Math.round(base*Math.max(1,streak));pts+=g;
+  toast(label+(streak>1?" ×"+streak:"")+" +"+g);
+  if(combo)SND.combo();else SND.trick(streak);
+  streak=Math.min(5,streak+1);maxStreak=Math.max(maxStreak,streak);
+}
 
 // ---------- physics ----------
 function step(dt){
@@ -669,10 +790,10 @@ function step(dt){
   runT+=dt;
   bike.jumpCd=Math.max(0,bike.jumpCd-dt);
 
-  const half=WB/2,cos=Math.cos(bike.a),sin=Math.sin(bike.a);
+  const half=veh.wb/2,cos=Math.cos(bike.a),sin=Math.sin(bike.a);
   const fwx=bike.x+cos*half,bwx=bike.x-cos*half;
   const fwy=bike.y+sin*half,bwy=bike.y-sin*half;
-  const fc=fwy+WR>=groundY(fwx),bc=bwy+WR>=groundY(bwx);
+  const fc=fwy+veh.wr>=groundY(fwx),bc=bwy+veh.wr>=groundY(bwx);
   bike.onGround=fc||bc;
 
   bike.vy+=G*dt;
@@ -680,55 +801,96 @@ function step(dt){
   const usingN=K.nitro()&&nitro>0.02;
   if(usingN)nitro=Math.max(0,nitro-0.42*dt);
   else nitro=Math.min(1,nitro+0.13*dt);
+  if(usingN&&!nosWas)SND.nitro();
+  nosWas=usingN;
 
   if(bike.onGround){
     if(bike.airT>0.25){
       bike.lastAir=bike.airT;
+      const air=bike.airT;
       const rot=(bike.airStartA-bike.a)/(Math.PI*2);
       const nf=Math.floor(Math.abs(rot)+0.22);
-      if(nf>0){flips+=nf;const p=nf*nf*50;pts+=p;toast((nf>1?nf+"x ":"")+"BACKFLIP +"+p);}
-      else if(bike.airT>0.7){const p=Math.round(bike.airT*12);pts+=p;toast("AIR +"+p);}
+      SND.land();
+      if(nf>0){
+        flips+=nf;
+        const p=nf*nf*50+(air>2?60:0);
+        let named="";
+        if(nf>=3)named="BAHUBALI";              // triple+ flip
+        else if(nf>=2)named="DOUBLE DHAMAKA";    // double flip
+        else if(bike.nosInAir)named="NITRO PALTI";// flip on the gas
+        else if(air>2)named="MULTIBAGGER";        // flip + huge hang time
+        if(named){bestCombo=named;award(p+150,named+" "+(nf>1?nf+"× ":"")+"PALTI",true);}
+        else award(p,(nf>1?nf+"× ":"")+"BACKFLIP",false);
+      }else if(air>1.6){award(120,"SUPERMAN AIR",false);}
+      else if(air>0.7){award(Math.round(air*18),"BIG AIR",false);}
     }
-    bike.airT=0;
+    bike.airT=0;bike.nosInAir=false;
 
     const slope=groundSlope(bike.x);
     let da=slope-bike.a;
     while(da>Math.PI)da-=2*Math.PI;
     while(da<-Math.PI)da+=2*Math.PI;
-    if(Math.abs(da)>Math.PI*0.62){crash();return;}
+    if(Math.abs(da)>Math.PI*0.88){crash();return;}
 
-    if(K.left())bike.va-=8.5*dt;
-    if(K.right())bike.va+=8.5*dt;
+    if(K.left())bike.va-=veh.tqG*dt;
+    if(K.right())bike.va+=veh.tqG*dt;
     const lean=Math.abs(da)>0.30&&Math.abs(da)<Math.PI*0.55;
-    if(lean&&Math.abs(bike.vx)>120){wheelieT+=dt;if(wheelieT>0.5){pts+=1;wheelieT-=0.1;}}
-    const k=(K.left()||K.right())?60:240;
+    if(lean&&Math.abs(bike.vx)>120){
+      wheelieT+=dt;
+      if(!bike.trickShown&&wheelieT>0.5){bike.trickShown=true;toast((da>0?"WHEELIE":"STOPPIE")+" 🔥");SND.trick(1);}
+      if(wheelieT>0.5){pts+=1;wheelieT-=0.1;}
+    }else{bike.trickShown=false;}
+    // self-right toward the ground angle — stronger = steadier, less tippy
+    const k=(K.left()||K.right())?220:480;
     bike.va+=da*k*dt;
-    bike.va*=Math.pow(0.002,dt);
-
-    const gyMid=(groundY(fwx)+groundY(bwx))/2;
-    const want=gyMid-WR;
-    if(bike.y>want){bike.y=want;if(bike.vy>0)bike.vy=0;}
+    bike.va*=Math.pow(0.0015,dt);
 
     const dirx=Math.cos(slope),diry=Math.sin(slope);
-    let v=bike.vx*dirx+bike.vy*diry;
-    if(K.gas())v+=900*dt;
-    if(usingN)v+=850*dt;
-    if(keys.ArrowDown||keys.KeyS)v-=1100*dt;
-    v*=Math.pow(0.5,dt);
-    v=Math.max(-260,Math.min(usingN?1750:1350,v));
+    const gyMid=(groundY(fwx)+groundY(bwx))/2;
+    const want=gyMid-veh.wr;
+    if(bike.y>want){
+      bike.y=want;
+      // snap onto the surface but KEEP along-slope momentum — don't zero the downhill
+      // (gravity) speed, only discard the velocity poking into the ground
+      const along=bike.vx*dirx+bike.vy*diry;
+      bike.vx=dirx*along;bike.vy=diry*along;
+    }
+    let v=bike.vx*dirx+bike.vy*diry;        // gravity is already folded into bike.vy above
+    const maxV=usingN?veh.maxVN:veh.maxV;
+    // stonkrider model: throttle is a force that FADES as HORIZONTAL speed nears the cap
+    // (never a brake). Gravity — already in v — is what carries you down the red slopes.
+    const thr=Math.max(0,1-Math.abs(bike.vx)/maxV);
+    const drive=(K.gas()?veh.accel*(0.4+0.6*thr):0)+(usingN?veh.nAccel*thr:0);
+    // engine torque to fight gravity on climbs — scales with uphill steepness, only under
+    // power, so you don't stall on the bigger/steeper hills (no effect on flats or descents)
+    const climb=(K.gas()||usingN)?Math.max(0,-diry)*G*0.8:0;
+    v+=(drive+climb)*dt;
+    if(keys.ArrowDown||keys.KeyS)v-=veh.brake*dt;
+    v*=Math.pow(0.80,dt);                     // lighter rolling drag so momentum carries
+    // cap HORIZONTAL speed, not along-slope — so steep descents keep full forward speed
+    // instead of shrinking by cos(slope); a little headroom lets gravity quicken descents
+    const capV=Math.min(maxV*1.5,maxV/Math.max(0.45,dirx));
+    v=Math.max(-260,Math.min(capV,v));
     bike.vx=dirx*v;bike.vy=diry*v;
-    bike.spin+=v*dt/WR;
+    bike.spin+=v*dt/veh.wr;
 
     if(K.jump()&&bike.jumpCd<=0){
-      bike.vy-=640;bike.y-=4;bike.jumpCd=0.45;bike.onGround=false;
-      bike.airStartA=bike.a;bike.airT=0.001;
+      bike.vy-=veh.jump;bike.y-=4;bike.jumpCd=0.45;bike.onGround=false;
+      bike.airStartA=bike.a;bike.airT=0.001;SND.jump();
     }
   }else{
+    bike.nosInAir=bike.nosInAir||usingN;
     if(bike.airT===0)bike.airStartA=bike.a;
     bike.airT+=dt;
-    if(K.left())bike.va-=13.5*dt;
-    if(K.right())bike.va+=13.5*dt;
-    bike.va*=Math.pow(0.45,dt);
+    if(K.left())bike.va-=veh.tqA*dt;
+    else if(K.right())bike.va+=veh.tqA*dt;
+    else{
+      // no trick input → ease toward the ground angle ahead so landings come in flat
+      let dl=groundSlope(bike.x)-bike.a;
+      while(dl>Math.PI)dl-=2*Math.PI;while(dl<-Math.PI)dl+=2*Math.PI;
+      bike.va+=dl*13*dt;
+    }
+    bike.va*=Math.pow(0.30,dt);
     if(K.gas())bike.vx+=130*dt;
     if(usingN){bike.vx+=Math.cos(bike.a)*620*dt;bike.vy+=Math.sin(bike.a)*620*dt;}
   }
@@ -737,22 +899,24 @@ function step(dt){
   bike.x+=bike.vx*dt;
   bike.y+=bike.vy*dt;
 
-  const hx=bike.x+(-10)*Math.cos(bike.a)-(-52)*Math.sin(bike.a);
-  const hy=bike.y+(-10)*Math.sin(bike.a)+(-52)*Math.cos(bike.a);
-  if(hy>groundY(hx)+4){crash();return;}
+  const hx=bike.x+veh.headX*Math.cos(bike.a)-veh.headY*Math.sin(bike.a);
+  const hy=bike.y+veh.headX*Math.sin(bike.a)+veh.headY*Math.cos(bike.a);
+  if(hy>groundY(hx)+10){crash();return;}
 
   if(bike.x>=terrain.length-(TAIL-1)*terrain.seg)finish();
 }
 function crash(){
   bike.crashT=0.8;
   pts=Math.max(0,pts-20);
-  bike.lastAir=0;
-  toast("REKT −20");
+  bike.lastAir=0;streak=1;        // a crash breaks the combo streak
+  SND.crash();
+  toast(veh.rekt||"REKT −20");
   track("crash",{stock:terrain.stock.sym});
 }
 function fmtT(s){const m=Math.floor(s/60),r=s-m*60;return m+":"+(r<10?"0":"")+r.toFixed(1);}
 function finish(){
   bike.finished=true;state="over";
+  SND.finish();SND.engineOff();
   const s=terrain.stock;
   const p=Math.round((priceAt(bike.x)-startPrice)*qty);
   $("o-title").textContent="TARGET HIT 🎯";
@@ -761,54 +925,66 @@ function finish(){
   $("o-time").textContent=fmtT(runT);
   $("o-pts").textContent=pts;
   $("o-flips").textContent=flips;
+  $("o-streak").textContent="×"+maxStreak+(bestCombo?" · "+bestCombo:"");
   $("o-price").textContent=fmtP(s,priceAt(bike.x));
   const pe=$("o-pnl");
   pe.textContent=(p<0?"-₹":"₹")+Math.abs(p).toLocaleString("en-IN");
   pe.className=p>=0?"up":"down";
   $("overlay").style.display="flex";
-  track("run_finish",{stock:s.sym,period:period,time:Math.round(runT*10)/10,points:pts,flips:flips,pnl:p});
+  track("run_finish",{stock:s.sym,period:period,time:Math.round(runT*10)/10,points:pts,flips:flips,pnl:p,max_streak:maxStreak,best_combo:bestCombo});
 }
 
 // ---------- drawing ----------
 function draw(){
   ctx.fillStyle="#0d0d11";ctx.fillRect(0,0,W,H);
   const t=terrain,SEG=t.seg;
-  const i0=Math.max(0,Math.floor(camX/SEG)-1);
-  const i1=Math.min(t.n-1,Math.ceil((camX+W)/SEG)+1);
+  // apply the airtime zoom around screen centre; all world drawing below is unchanged
+  ctx.save();
+  ctx.translate(W/2,H/2);ctx.scale(camZoom,camZoom);ctx.translate(-W/2,-H/2);
+  const margin=(W/camZoom-W)/2;            // extra world revealed on each side when zoomed out
+  const BOT=H/camZoom+120;                 // fill baseline below the visible bottom at any zoom
+  const i0=Math.max(0,Math.floor((camX-margin)/SEG)-1);
+  const i1=Math.min(t.n-1,Math.ceil((camX+W+margin)/SEG)+1);
 
   ctx.strokeStyle="rgba(255,255,255,0.035)";ctx.lineWidth=1;
   const gstep=Math.max(1,Math.round(400/SEG));
   for(let i=i0;i<=i1;i++){
     if(i%gstep)continue;
     const x=t.xs[i]-camX;
-    ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(x,-H);ctx.lineTo(x,BOT);ctx.stroke();
   }
 
-  const SUB=4; // spline subsamples per segment — must match physics curve
+  const SUB=6; // spline subsamples per segment — higher = smoother terrain line
   ctx.beginPath();
-  ctx.moveTo(t.xs[i0]-camX,H+60);
+  ctx.moveTo(t.xs[i0]-camX,BOT);
   for(let i=i0;i<i1;i++)
     for(let s=0;s<SUB;s++){
       const x=t.xs[i]+s*SEG/SUB;
-      ctx.lineTo(x-camX,groundY(x)-camY);
+      ctx.lineTo(x-camX,groundY(x,TERRAIN_SHARP)-camY);
     }
-  ctx.lineTo(t.xs[i1]-camX,groundY(t.xs[i1])-camY);
-  ctx.lineTo(t.xs[i1]-camX,H+60);
+  ctx.lineTo(t.xs[i1]-camX,groundY(t.xs[i1],TERRAIN_SHARP)-camY);
+  ctx.lineTo(t.xs[i1]-camX,BOT);
   ctx.closePath();
   ctx.fillStyle="#17171d";ctx.fill();
 
-  ctx.lineWidth=2.6;ctx.lineCap="round";ctx.lineJoin="round";
-  for(let i=i0;i<i1;i++){
-    const up=t.ys[i+1]<=t.ys[i];
-    const col=up?"#35e0a1":"#f1535e";
-    ctx.strokeStyle=col;ctx.shadowColor=col;ctx.shadowBlur=14;
+  ctx.lineCap="round";ctx.lineJoin="round";
+  // stonkrider-style edge: build each colour's path once, then stroke wide soft glow
+  // layers under a crisp bright core — gives a thick, glowing edge cheaply
+  for(const up of[true,false]){
+    const c=up?"53,224,161":"241,83,94";
     ctx.beginPath();
-    for(let s=0;s<=SUB;s++){
-      const x=t.xs[i]+s*SEG/SUB;
-      const y=groundY(x)-camY;
-      s?ctx.lineTo(x-camX,y):ctx.moveTo(x-camX,y);
+    for(let i=i0;i<i1;i++){
+      if((t.ys[i+1]<=t.ys[i])!==up)continue;
+      for(let s=0;s<=SUB;s++){
+        const x=t.xs[i]+s*SEG/SUB;
+        const y=groundY(x,TERRAIN_SHARP)-camY;
+        s?ctx.lineTo(x-camX,y):ctx.moveTo(x-camX,y);
+      }
     }
-    ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle="rgba("+c+",0.045)";ctx.lineWidth=26;ctx.stroke();
+    ctx.strokeStyle="rgba("+c+",0.07)";ctx.lineWidth=14;ctx.stroke();
+    ctx.strokeStyle="rgb("+c+")";ctx.shadowColor="rgb("+c+")";ctx.shadowBlur=10;ctx.lineWidth=3.4;ctx.stroke();
   }
   ctx.shadowBlur=0;
 
@@ -826,7 +1002,24 @@ function draw(){
     ctx.fillText(dd,x,y+(isMin?60:-52));
     ctx.textAlign="left";
   }
+  // market-event flags — big up/down days planted on the chart terrain
+  if(t.events)for(const e of t.events){
+    const gi=LEAD+e.idx,x=t.xs[gi]-camX,y=t.ys[gi]-camY;
+    if(x<-150||x>W+150)continue;
+    const up=e.pct>=0,col=up?"#35e0a1":"#f1535e";
+    ctx.strokeStyle=col;ctx.globalAlpha=.9;ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y-50);ctx.stroke();
+    ctx.fillStyle=col;
+    ctx.beginPath();ctx.moveTo(x,y-50);ctx.lineTo(x+24,y-44);ctx.lineTo(x,y-38);ctx.closePath();ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.fillStyle="#0d0d11";ctx.font="700 11px ui-monospace,Menlo,monospace";ctx.textAlign="center";
+    ctx.fillText(up?"▲":"▼",x+8,y-42);
+    ctx.fillStyle=col;ctx.font="700 11px ui-monospace,Menlo,monospace";
+    ctx.fillText((up?"+":"")+(e.pct*100).toFixed(0)+"%",x,y-58);
+    ctx.textAlign="left";
+  }
   drawBike();
+  ctx.restore();
 }
 
 function drawBike(){
@@ -835,7 +1028,7 @@ function drawBike(){
   ctx.translate(bike.x-camX,bike.y-camY);
   ctx.rotate(bike.a);
   if(flash)ctx.globalAlpha=0.45+0.4*Math.sin(performance.now()/40);
-  const half=WB/2;
+  const half=veh.wb/2;
 
   const usingN=K.nitro()&&nitro>0.02&&!flash;
   if((K.gas()||usingN)&&!bike.finished){
@@ -847,29 +1040,77 @@ function drawBike(){
       ctx.arc(-half-8-Math.random()*L,-2+Math.random()*6-3,r,0,7);ctx.fill();
     }
   }
+  // wheels — common to every vehicle, sized to the chosen ride
   for(const wx of[-half,half]){
-    ctx.beginPath();ctx.arc(wx,0,WR,0,7);
+    ctx.beginPath();ctx.arc(wx,0,veh.wr,0,7);
     ctx.strokeStyle="#c9d0d8";ctx.lineWidth=2.6;ctx.stroke();
     ctx.save();ctx.translate(wx,0);ctx.rotate(bike.spin);
     ctx.strokeStyle="rgba(201,208,216,.5)";ctx.lineWidth=1.2;
     for(let k=0;k<3;k++){ctx.rotate(Math.PI/3);
-      ctx.beginPath();ctx.moveTo(-WR+2,0);ctx.lineTo(WR-2,0);ctx.stroke();}
+      ctx.beginPath();ctx.moveTo(-veh.wr+2,0);ctx.lineTo(veh.wr-2,0);ctx.stroke();}
     ctx.restore();
   }
-  ctx.strokeStyle="#aeb6bf";ctx.lineWidth=3;ctx.lineCap="round";
-  ctx.beginPath();ctx.moveTo(-half,0);ctx.lineTo(-10,-14);ctx.lineTo(12,-14);ctx.lineTo(half,0);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(12,-14);ctx.lineTo(20,-26);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(-10,-14);ctx.lineTo(-16,-22);ctx.stroke();
-  ctx.fillStyle="#aeb6bf";ctx.fillRect(-22,-25,12,4);
-  ctx.strokeStyle="#f1535e";ctx.lineWidth=4;
-  ctx.beginPath();ctx.moveTo(-14,-24);ctx.lineTo(-2,-12);ctx.lineTo(8,-15);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(-14,-24);ctx.lineTo(-8,-42);ctx.stroke();
-  ctx.beginPath();ctx.moveTo(-8,-40);ctx.lineTo(18,-27);ctx.stroke();
-  ctx.beginPath();ctx.arc(-9,-49,6.5,0,7);
-  ctx.fillStyle="#f1535e";ctx.fill();
-  ctx.fillStyle="#e9edf2";ctx.beginPath();ctx.arc(-6.5,-49,2.4,0,7);ctx.fill();
+  (DRAW_BODY[veh.key]||DRAW_BODY.bike)(half);
   ctx.restore();
 }
+
+// per-vehicle bodies, drawn in bike-local space (origin = axle midpoint, +x forward)
+const DRAW_BODY={
+  bike(half){
+    ctx.strokeStyle="#aeb6bf";ctx.lineWidth=3;ctx.lineCap="round";
+    ctx.beginPath();ctx.moveTo(-half,0);ctx.lineTo(-10,-14);ctx.lineTo(12,-14);ctx.lineTo(half,0);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(12,-14);ctx.lineTo(20,-26);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-10,-14);ctx.lineTo(-16,-22);ctx.stroke();
+    ctx.fillStyle="#aeb6bf";ctx.fillRect(-22,-25,12,4);
+    ctx.strokeStyle="#f1535e";ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(-14,-24);ctx.lineTo(-2,-12);ctx.lineTo(8,-15);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-14,-24);ctx.lineTo(-8,-42);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-8,-40);ctx.lineTo(18,-27);ctx.stroke();
+    ctx.beginPath();ctx.arc(-9,-49,6.5,0,7);
+    ctx.fillStyle="#f1535e";ctx.fill();
+    ctx.fillStyle="#e9edf2";ctx.beginPath();ctx.arc(-6.5,-49,2.4,0,7);ctx.fill();
+  },
+  auto(half){
+    // black-and-yellow three-wheeler: front wheel forward, cabin over the rear axle
+    ctx.lineJoin="round";ctx.lineCap="round";
+    // chassis bar from front wheel back to cabin
+    ctx.strokeStyle="#3a3a44";ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(half,-2);ctx.lineTo(-half+6,-2);ctx.stroke();
+    // cabin body (yellow roof, black skirt) sitting above the rear wheel
+    ctx.fillStyle="#e8b34b";
+    ctx.beginPath();
+    ctx.moveTo(-half-6,-6);ctx.lineTo(-half-6,-30);
+    ctx.quadraticCurveTo(-half-6,-44,2,-44);
+    ctx.quadraticCurveTo(20,-44,22,-22);ctx.lineTo(22,-6);ctx.closePath();ctx.fill();
+    ctx.fillStyle="#15151b";ctx.fillRect(-half-6,-14,28+half,8);
+    // windscreen
+    ctx.fillStyle="#0d0d11";
+    ctx.beginPath();ctx.moveTo(4,-40);ctx.lineTo(19,-22);ctx.lineTo(4,-22);ctx.closePath();ctx.fill();
+    // driver
+    ctx.fillStyle="#f1535e";ctx.beginPath();ctx.arc(-6,-30,5,0,7);ctx.fill();
+    // headlight
+    ctx.fillStyle="#fff3c4";ctx.beginPath();ctx.arc(half,-8,2.6,0,7);ctx.fill();
+  },
+  cycle(half){
+    // slim bicycle: diamond frame, rider leaning forward
+    ctx.strokeStyle="#9fb3c8";ctx.lineWidth=2.4;ctx.lineCap="round";ctx.lineJoin="round";
+    // frame: rear axle -> seat -> bars -> front axle, plus down tube
+    ctx.beginPath();
+    ctx.moveTo(-half,0);ctx.lineTo(-6,-22);ctx.lineTo(half,0);
+    ctx.moveTo(-6,-22);ctx.lineTo(0,0);ctx.lineTo(half,0);
+    ctx.moveTo(half,0);ctx.lineTo(14,-26);
+    ctx.stroke();
+    // handlebar + seat
+    ctx.strokeStyle="#e9edf2";ctx.lineWidth=3;
+    ctx.beginPath();ctx.moveTo(10,-26);ctx.lineTo(18,-26);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(-10,-22);ctx.lineTo(-2,-22);ctx.stroke();
+    // rider: torso leaning to bars, head up top
+    ctx.strokeStyle="#35e0a1";ctx.lineWidth=4;
+    ctx.beginPath();ctx.moveTo(-6,-22);ctx.lineTo(-2,-40);ctx.lineTo(13,-27);ctx.stroke();
+    ctx.beginPath();ctx.arc(-3,-46,5.5,0,7);
+    ctx.fillStyle="#35e0a1";ctx.fill();
+  },
+};
 
 // ---------- minimap ----------
 const mm=$("minimap"),mctx=mm.getContext("2d");
@@ -906,6 +1147,7 @@ function updateHUD(){
   const s=terrain.stock;
   $("h-sym").textContent=s.sym+" · "+period+(smooth?" · SMOOTH":"")+(terrain.live?"":" · SIM");
   $("h-pts").textContent=pts;
+  $("h-streak").textContent=streak>1?"COMBO ×"+streak:"";
   const a=bike.airT>0?bike.airT:bike.lastAir;
   $("h-air").textContent=a.toFixed(1)+"s";
   const price=priceAt(bike.x);
@@ -921,11 +1163,18 @@ function loop(ts){
   requestAnimationFrame(loop);
   const dt=Math.min(0.033,(ts-last)/1000)||0.016;last=ts;
   if(state==="menu"||!terrain)return;
-  if(state==="play"){const sub=4;for(let i=0;i<sub;i++)step(dt/sub);}
-  const tx=bike.x-W*0.36,ty=bike.y-H*0.55;
-  camX+=(tx-camX)*Math.min(1,dt*6);
-  camY+=(ty-camY)*Math.min(1,dt*4);
+  if(state==="play"){const sub=4;for(let i=0;i<sub;i++)step(dt/sub);SND.engine(bike.vx,!!K.gas());}
+  // look ahead in the direction of travel so fast sections & landings aren't blind
+  const lead=Math.max(-W*0.10,Math.min(W*0.18,bike.vx*0.13));
+  const tx=bike.x-W*0.36+lead, ty=bike.y-H*0.52;
+  // exponential damping: smooth and stable at any frame rate (independent of dt)
+  camX+=(tx-camX)*(1-Math.exp(-9*dt));
+  camY+=(ty-camY)*(1-Math.exp(-5*dt));
   camX=Math.max(0,Math.min(camX,Math.max(0,terrain.length-W)));
+  // pull the camera back during big airtime so the landing stays in frame
+  const air=(!bike.onGround&&state==="play")?bike.airT:0;
+  const zTarget=1-Math.min(0.22,air*0.13);
+  camZoom+=(zTarget-camZoom)*(1-Math.exp(-4.5*dt));
   draw();
   drawMinimap();
   if(state==="play")updateHUD();
@@ -934,7 +1183,7 @@ function loop(ts){
 requestAnimationFrame(loop);
 
 // ---------- flow ----------
-const GAME_UI=["hud-tl","hud-tc","minimap","legend","brand","g-home"];
+const GAME_UI=["hud-tl","hud-tc","minimap","legend","brand","g-home","mute"];
 function startRun(){
   const ser=currentSeries();
   if(!ser)return;
@@ -942,7 +1191,7 @@ function startRun(){
   buildTerrain(detailSym,ser);
   buildMinimap();
   fullReset();
-  camX=Math.max(0,bike.x-W*0.36);camY=bike.y-H*0.55;
+  camX=Math.max(0,bike.x-W*0.36);camY=bike.y-H*0.52;camZoom=1;
   $("detail").classList.add("hide");
   $("home").classList.add("hide");
   $("overlay").style.display="none";
@@ -950,16 +1199,20 @@ function startRun(){
   $("touch").style.display=isTouch?"flex":"none";
   if(isTouch)$("legend").classList.add("hide");
   state="play";
+  SND.resume();SND.engineOn();
+  $("mute").textContent=SND.isMuted()?"🔇":"🔊";
   track("run_start",{stock:terrain.stock.sym,period:period,smooth:smooth,live:!!terrain.live});
 }
 function exitToDetail(){
   state="menu";
+  SND.engineOff();
   $("overlay").style.display="none";
   GAME_UI.forEach(id=>$(id).classList.add("hide"));
   $("touch").style.display="none";
   $("detail").classList.remove("hide");
 }
 $("ride").onclick=startRun;
+$("mute").onclick=()=>{const m=SND.setMuted(!SND.isMuted());$("mute").textContent=m?"🔇":"🔊";};
 $("o-retry").onclick=()=>startRun();
 $("o-menu").onclick=exitToDetail;
 $("g-home").onclick=exitToDetail;
